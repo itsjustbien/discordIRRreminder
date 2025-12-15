@@ -1,5 +1,14 @@
 const Discord = require("discord.js");
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
+
+const DATA_DIR = path.join(__dirname, "data");
+const REMINDERS_FILE = path.join(DATA_DIR, "reminders.json");
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 const client = new Discord.Client({
   intents: [
@@ -13,6 +22,63 @@ const client = new Discord.Client({
 // Reminder storage
 const reminders = new Map();
 let reminderCounter = 1;
+
+function saveReminders() {
+  try {
+    const data = Array.from(reminders.entries()).map(([id, reminder]) => {
+      const { intervalId, preWarningTimeoutId, ...safeReminder } = reminder;
+      return {
+        id,
+        ...safeReminder,
+        startDate: reminder.startDate ? reminder.startDate.toISOString() : null,
+        endDate: reminder.endDate ? reminder.endDate.toISOString() : null,
+      };
+    });
+    fs.writeFileSync(REMINDERS_FILE, JSON.stringify({ reminders: data, counter: reminderCounter }, null, 2));
+    console.log(`Saved ${data.length} reminders to disk`);
+  } catch (error) {
+    console.error("Error saving reminders:", error);
+  }
+}
+
+function loadReminders() {
+  try {
+    if (!fs.existsSync(REMINDERS_FILE)) {
+      console.log("No reminders file found, starting fresh");
+      return;
+    }
+    const rawData = fs.readFileSync(REMINDERS_FILE, "utf8");
+    const data = JSON.parse(rawData);
+    
+    if (data.counter) {
+      reminderCounter = data.counter;
+    }
+    
+    if (data.reminders && Array.isArray(data.reminders)) {
+      data.reminders.forEach((savedReminder) => {
+        const reminder = {
+          ...savedReminder,
+          startDate: savedReminder.startDate ? new Date(savedReminder.startDate) : null,
+          endDate: savedReminder.endDate ? new Date(savedReminder.endDate) : null,
+          intervalId: null,
+          preWarningTimeoutId: null,
+        };
+        reminders.set(savedReminder.id, reminder);
+      });
+      console.log(`Loaded ${reminders.size} reminders from disk`);
+    }
+  } catch (error) {
+    console.error("Error loading reminders:", error);
+  }
+}
+
+function rescheduleAllReminders() {
+  console.log("Rescheduling all reminders...");
+  reminders.forEach((reminder, id) => {
+    scheduleReminder(id, reminder);
+  });
+  console.log(`Rescheduled ${reminders.size} reminders`);
+}
 
 // Express app setup
 const app = express();
@@ -543,6 +609,7 @@ app.post("/api/reminders", (req, res) => {
 
     reminders.set(reminderId, reminder);
     scheduleReminder(reminderId, reminder);
+    saveReminders();
 
     // Return reminder without circular references (intervalId, preWarningTimeoutId)
     const { intervalId, preWarningTimeoutId, ...safeReminder } = reminder;
@@ -621,6 +688,7 @@ app.put("/api/reminders/:id", (req, res) => {
     }
 
     scheduleReminder(reminderId, reminder);
+    saveReminders();
 
     // Return reminder without circular references
     const { intervalId, preWarningTimeoutId, ...safeReminder } = reminder;
@@ -643,6 +711,7 @@ app.delete("/api/reminders/:id", (req, res) => {
   if (reminder.preWarningTimeoutId) clearTimeout(reminder.preWarningTimeoutId);
 
   reminders.delete(reminderId);
+  saveReminders();
 
   res.json({ success: true });
 });
@@ -1506,6 +1575,9 @@ client.once("ready", async () => {
   } catch (error) {
     console.error("❌ Error registering commands:", error);
   }
+  
+  loadReminders();
+  rescheduleAllReminders();
 });
 
 client.on("interactionCreate", async (interaction) => {
@@ -1575,6 +1647,7 @@ client.on("interactionCreate", async (interaction) => {
         if (reminder.preWarningTimeoutId)
           clearTimeout(reminder.preWarningTimeoutId);
         reminders.delete(id);
+        saveReminders();
 
         await interaction.reply(`✅ Reminder #${id} stopped!`);
       }
