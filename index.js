@@ -1,14 +1,8 @@
 const Discord = require("discord.js");
 const express = require("express");
-const fs = require("fs");
-const path = require("path");
 
-const DATA_DIR = path.join(__dirname, "data");
-const REMINDERS_FILE = path.join(DATA_DIR, "reminders.json");
-
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+const JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID;
+const JSONBIN_API_KEY = process.env.JSONBIN_API_KEY;
 
 const client = new Discord.Client({
   intents: [
@@ -23,10 +17,20 @@ const client = new Discord.Client({
 const reminders = new Map();
 let reminderCounter = 1;
 
-function saveReminders() {
+async function saveReminders() {
+  if (!JSONBIN_BIN_ID || !JSONBIN_API_KEY) {
+    console.error('JSONBin credentials not configured, cannot save');
+    return false;
+  }
+  
   try {
     const data = Array.from(reminders.entries()).map(([id, reminder]) => {
-      const { intervalId, preWarningTimeoutId, oneTimeTimeoutId, ...safeReminder } = reminder;
+      const {
+        intervalId,
+        preWarningTimeoutId,
+        oneTimeTimeoutId,
+        ...safeReminder
+      } = reminder;
       return {
         id,
         ...safeReminder,
@@ -34,42 +38,81 @@ function saveReminders() {
         endDate: reminder.endDate ? reminder.endDate.toISOString() : null,
       };
     });
-    fs.writeFileSync(REMINDERS_FILE, JSON.stringify({ reminders: data, counter: reminderCounter }, null, 2));
-    console.log(`Saved ${data.length} reminders to disk`);
+    
+    const response = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Master-Key': JSONBIN_API_KEY
+      },
+      body: JSON.stringify({ reminders: data, counter: reminderCounter })
+    });
+    
+    if (!response.ok) {
+      console.error('Failed to save to JSONBin:', response.status, response.statusText);
+      return false;
+    }
+    
+    console.log(`Saved ${data.length} reminders to JSONBin`);
+    return true;
   } catch (error) {
     console.error("Error saving reminders:", error);
+    return false;
   }
 }
 
-function loadReminders() {
+async function loadRemindersFromJsonBin() {
+  if (!JSONBIN_BIN_ID || !JSONBIN_API_KEY) {
+    console.error('JSONBin credentials not configured');
+    return;
+  }
+  
   try {
-    if (!fs.existsSync(REMINDERS_FILE)) {
-      console.log("No reminders file found, starting fresh");
+    const response = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`, {
+      headers: {
+        'X-Master-Key': JSONBIN_API_KEY
+      }
+    });
+    
+    if (!response.ok) {
+      console.error('Failed to load from JSONBin:', response.status, response.statusText);
       return;
     }
-    const rawData = fs.readFileSync(REMINDERS_FILE, "utf8");
-    const data = JSON.parse(rawData);
     
+    const jsonData = await response.json();
+    const data = jsonData.record;
+
     if (data.counter) {
       reminderCounter = data.counter;
     }
-    
+
     if (data.reminders && Array.isArray(data.reminders)) {
       data.reminders.forEach((savedReminder) => {
         const reminder = {
           ...savedReminder,
-          startDate: savedReminder.startDate ? new Date(savedReminder.startDate) : null,
-          endDate: savedReminder.endDate ? new Date(savedReminder.endDate) : null,
+          id: parseInt(savedReminder.id) || savedReminder.id,
+          intervalMinutes: parseInt(savedReminder.intervalMinutes) || 0,
+          preWarningMinutes: savedReminder.preWarningMinutes ? parseInt(savedReminder.preWarningMinutes) : null,
+          timezoneOffset: parseInt(savedReminder.timezoneOffset) || 0,
+          startDate: savedReminder.startDate
+            ? new Date(savedReminder.startDate)
+            : null,
+          endDate: savedReminder.endDate
+            ? new Date(savedReminder.endDate)
+            : null,
+          daysOfWeek: savedReminder.daysOfWeek ? savedReminder.daysOfWeek.map(d => parseInt(d)) : null,
           intervalId: null,
           preWarningTimeoutId: null,
           oneTimeTimeoutId: null,
         };
         reminders.set(savedReminder.id, reminder);
       });
-      console.log(`Loaded ${reminders.size} reminders from disk`);
+      console.log(`Loaded ${reminders.size} reminders from JSONBin`);
+    } else {
+      console.log("No saved reminders found in JSONBin");
     }
   } catch (error) {
-    console.error("Error loading reminders:", error);
+    console.error("Error loading reminders from JSONBin:", error);
   }
 }
 
@@ -87,8 +130,8 @@ app.use(express.json());
 app.use(express.static("public"));
 
 // Disable caching for API routes to ensure fresh data
-app.use('/api', (req, res, next) => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+app.use("/api", (req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
   next();
 });
 
@@ -230,21 +273,34 @@ function scheduleReminder(reminderId, reminder) {
     }
 
     // For one-time reminders, use the scheduled time, otherwise calculate next
-    const reminderTime = isOneTimeFire ? new Date(reminder.nextRun) : getNextScheduledTime(
-      reminder.startTime,
-      reminder.endTime,
-      reminder.intervalMinutes || 1440,
-      reminder.timezoneOffset || 0,
-    );
+    const reminderTime = isOneTimeFire
+      ? new Date(reminder.nextRun)
+      : getNextScheduledTime(
+          reminder.startTime,
+          reminder.endTime,
+          reminder.intervalMinutes || 1440,
+          reminder.timezoneOffset || 0,
+        );
 
     // Replace placeholders in main message
     let mainMessage = reminder.message;
-    mainMessage = mainMessage.replace(/\{time\}/g, getDiscordTimestamp(reminderTime.getTime(), "t"));
-    mainMessage = mainMessage.replace(/\{relative\}/g, getDiscordTimestamp(reminderTime.getTime(), "R"));
+    mainMessage = mainMessage.replace(
+      /\{time\}/g,
+      getDiscordTimestamp(reminderTime.getTime(), "t"),
+    );
+    mainMessage = mainMessage.replace(
+      /\{relative\}/g,
+      getDiscordTimestamp(reminderTime.getTime(), "R"),
+    );
 
-    const messageContent = roleMention ? `${roleMention}${mainMessage}` : mainMessage;
+    const messageContent = roleMention
+      ? `${roleMention}${mainMessage}`
+      : mainMessage;
 
-    const mainColor = parseInt((reminder.mainColor || '#00ff00').replace('#', ''), 16);
+    const mainColor = parseInt(
+      (reminder.mainColor || "#00ff00").replace("#", ""),
+      16,
+    );
     const embed = new Discord.EmbedBuilder()
       .setColor(mainColor)
       .setTitle(reminder.mainTitle || "🔔 Reminder!")
@@ -255,11 +311,15 @@ function scheduleReminder(reminderId, reminder) {
     if (reminder.isOneTime) {
       embed.setFooter({ text: `Reminder ID: ${reminderId} | One-time` });
     } else if (reminder.intervalMinutes === 0 && reminder.daysOfWeek) {
-      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const days = reminder.daysOfWeek.map(d => dayNames[d]).join(', ');
-      embed.setFooter({ text: `Reminder ID: ${reminderId} | Daily at ${formatTime(reminder.startTime)} on ${days}` });
+      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const days = reminder.daysOfWeek.map((d) => dayNames[d]).join(", ");
+      embed.setFooter({
+        text: `Reminder ID: ${reminderId} | Daily at ${formatTime(reminder.startTime)} on ${days}`,
+      });
     } else {
-      embed.setFooter({ text: `Reminder ID: ${reminderId} | Every ${reminder.intervalMinutes} min` });
+      embed.setFooter({
+        text: `Reminder ID: ${reminderId} | Every ${reminder.intervalMinutes} min`,
+      });
       embed.addFields({
         name: "Active Hours",
         value: `${formatTime(reminder.startTime)} - ${formatTime(reminder.endTime)}`,
@@ -268,8 +328,10 @@ function scheduleReminder(reminderId, reminder) {
 
     if (reminder.startDate || reminder.endDate) {
       const dateRange = [];
-      if (reminder.startDate) dateRange.push(`From: ${reminder.startDate.toLocaleDateString()}`);
-      if (reminder.endDate) dateRange.push(`Until: ${reminder.endDate.toLocaleDateString()}`);
+      if (reminder.startDate)
+        dateRange.push(`From: ${reminder.startDate.toLocaleDateString()}`);
+      if (reminder.endDate)
+        dateRange.push(`Until: ${reminder.endDate.toLocaleDateString()}`);
       embed.addFields({ name: "Active Dates", value: dateRange.join("\n") });
     }
 
@@ -280,7 +342,7 @@ function scheduleReminder(reminderId, reminder) {
       reminder.isActive = false;
       reminder.firedAt = Date.now();
       if (reminder.intervalId) clearInterval(reminder.intervalId);
-      saveReminders();
+      await saveReminders();
       console.log(`One-time reminder ${reminderId} fired and marked inactive`);
     }
   };
@@ -290,30 +352,40 @@ function scheduleReminder(reminderId, reminder) {
     const now = new Date();
     const timezoneOffset = reminder.timezoneOffset || 0;
     const userNow = new Date(now.getTime() - timezoneOffset * 60 * 1000);
-    
+
     // Calculate when the reminder should fire
-    const targetMinutes = reminder.startTime.hours * 60 + reminder.startTime.minutes;
+    const targetMinutes =
+      reminder.startTime.hours * 60 + reminder.startTime.minutes;
     const currentMinutes = userNow.getUTCHours() * 60 + userNow.getUTCMinutes();
-    
+
     let delayMinutes = targetMinutes - currentMinutes;
     if (delayMinutes < 0) delayMinutes += 24 * 60; // Tomorrow if already passed
-    
-    const delayMs = delayMinutes * 60 * 1000 - (userNow.getUTCSeconds() * 1000);
-    
+
+    const delayMs = delayMinutes * 60 * 1000 - userNow.getUTCSeconds() * 1000;
+
     reminder.nextRun = now.getTime() + delayMs;
-    
-    reminder.oneTimeTimeoutId = setTimeout(async () => {
-      await sendMainReminder(true);
-    }, Math.max(delayMs, 0));
-    
-    console.log(`Scheduled one-time reminder ${reminderId}: fires in ${delayMinutes} minutes`);
+
+    reminder.oneTimeTimeoutId = setTimeout(
+      async () => {
+        await sendMainReminder(true);
+      },
+      Math.max(delayMs, 0),
+    );
+
+    console.log(
+      `Scheduled one-time reminder ${reminderId}: fires in ${delayMinutes} minutes`,
+    );
     return;
   }
 
   // Handle daily reminders at specific time (interval=0, days selected)
-  if (reminder.intervalMinutes === 0 && reminder.daysOfWeek && reminder.daysOfWeek.length > 0) {
+  if (
+    reminder.intervalMinutes === 0 &&
+    reminder.daysOfWeek &&
+    reminder.daysOfWeek.length > 0
+  ) {
     let lastTriggeredDay = -1;
-    
+
     reminder.intervalId = setInterval(async () => {
       const now = new Date();
       if (!isWithinDateRange(now, reminder.startDate, reminder.endDate)) return;
@@ -325,9 +397,10 @@ function scheduleReminder(reminderId, reminder) {
       const userDay = userNow.getUTCDay();
 
       if (!reminder.daysOfWeek.includes(userDay)) return;
-      
+
       const currentMinutes = userHours * 60 + userMinutes;
-      const targetMinutes = reminder.startTime.hours * 60 + reminder.startTime.minutes;
+      const targetMinutes =
+        reminder.startTime.hours * 60 + reminder.startTime.minutes;
 
       // Trigger at exact time, once per day
       if (currentMinutes === targetMinutes && lastTriggeredDay !== userDay) {
@@ -336,52 +409,27 @@ function scheduleReminder(reminderId, reminder) {
       }
     }, 10000);
 
-    console.log(`Scheduled daily reminder ${reminderId}: at ${formatTime(reminder.startTime)} on selected days`);
+    console.log(
+      `Scheduled daily reminder ${reminderId}: at ${formatTime(reminder.startTime)} on selected days`,
+    );
     return;
   }
 
   // Regular recurring reminders (interval > 0)
   let lastTriggeredMinute = -1;
 
-  reminder.intervalId = setInterval(async () => {
-    const now = new Date();
-    if (!isWithinDateRange(now, reminder.startDate, reminder.endDate)) return;
-
-    const timezoneOffset = reminder.timezoneOffset || 0;
-    const userNow = new Date(now.getTime() - timezoneOffset * 60 * 1000);
-    const userHours = userNow.getUTCHours();
-    const userMinutes = userNow.getUTCMinutes();
-    const currentMinutes = userHours * 60 + userMinutes;
-
-    const startMinutes = reminder.startTime.hours * 60 + reminder.startTime.minutes;
-    const endMinutes = reminder.endTime.hours * 60 + reminder.endTime.minutes;
-
-    if (currentMinutes < startMinutes || currentMinutes > endMinutes) return;
-
-    if (reminder.daysOfWeek && reminder.daysOfWeek.length > 0) {
-      const userDay = userNow.getUTCDay();
-      if (!reminder.daysOfWeek.includes(userDay)) return;
+  // Function to schedule the next pre-warning
+  const scheduleNextPreWarning = () => {
+    if (!reminder.preWarningMinutes || !reminder.preWarningMessage) return;
+    
+    // Clear any existing pre-warning timeout
+    if (reminder.preWarningTimeoutId) {
+      clearTimeout(reminder.preWarningTimeoutId);
+      reminder.preWarningTimeoutId = null;
     }
-
-    const minutesSinceStart = currentMinutes - startMinutes;
-
-    if (minutesSinceStart >= 0 && minutesSinceStart % reminder.intervalMinutes === 0 && currentMinutes !== lastTriggeredMinute) {
-      lastTriggeredMinute = currentMinutes;
-      await sendMainReminder(false);
-    }
-  }, 10000);
-
-  reminder.nextRun = getNextScheduledTime(
-    reminder.startTime,
-    reminder.endTime,
-    reminder.intervalMinutes,
-    reminder.timezoneOffset || 0,
-  ).getTime();
-
-  // Schedule initial pre-warning if needed
-  if (reminder.preWarningMinutes && reminder.preWarningMessage) {
+    
     const now = Date.now();
-    const preWarningTime = reminder.nextRun - (reminder.preWarningMinutes * 60 * 1000);
+    const preWarningTime = reminder.nextRun - reminder.preWarningMinutes * 60 * 1000;
     
     if (preWarningTime > now) {
       const delay = preWarningTime - now;
@@ -399,12 +447,12 @@ function scheduleReminder(reminderId, reminder) {
         let preWarningContent = reminder.preWarningMessage;
         preWarningContent = preWarningContent.replace(/\{time\}/g, getDiscordTimestamp(eventTimestamp, "t"));
         preWarningContent = preWarningContent.replace(/\{relative\}/g, getDiscordTimestamp(eventTimestamp, "R"));
-        
+
         if (roleMention) {
           preWarningContent = `${roleMention}${preWarningContent}`;
         }
 
-        const preColor = parseInt((reminder.preWarningColor || '#ffaa00').replace('#', ''), 16);
+        const preColor = parseInt((reminder.preWarningColor || "#ffaa00").replace("#", ""), 16);
         const preEmbed = new Discord.EmbedBuilder()
           .setColor(preColor)
           .setTitle(reminder.preWarningTitle || "⚠️ Upcoming Event")
@@ -419,9 +467,69 @@ function scheduleReminder(reminderId, reminder) {
 
         await channel.send({ embeds: [preEmbed] });
       }, delay);
-      console.log(`Scheduled initial pre-warning for reminder ${reminderId} at ${new Date(preWarningTime).toLocaleString()}`);
+      console.log(`Scheduled pre-warning for reminder ${reminderId} at ${new Date(preWarningTime).toLocaleString()}`);
     }
-  }
+  };
+
+  // Function to update nextRun time
+  const updateNextRun = () => {
+    reminder.nextRun = getNextScheduledTime(
+      reminder.startTime,
+      reminder.endTime,
+      reminder.intervalMinutes,
+      reminder.timezoneOffset || 0,
+    ).getTime();
+    
+    // Schedule the next pre-warning for the updated nextRun
+    scheduleNextPreWarning();
+  };
+
+  reminder.intervalId = setInterval(async () => {
+    const now = new Date();
+    if (!isWithinDateRange(now, reminder.startDate, reminder.endDate)) return;
+
+    const timezoneOffset = reminder.timezoneOffset || 0;
+    const userNow = new Date(now.getTime() - timezoneOffset * 60 * 1000);
+    const userHours = userNow.getUTCHours();
+    const userMinutes = userNow.getUTCMinutes();
+    const currentMinutes = userHours * 60 + userMinutes;
+
+    const startMinutes =
+      reminder.startTime.hours * 60 + reminder.startTime.minutes;
+    const endMinutes = reminder.endTime.hours * 60 + reminder.endTime.minutes;
+
+    if (currentMinutes < startMinutes || currentMinutes > endMinutes) return;
+
+    if (reminder.daysOfWeek && reminder.daysOfWeek.length > 0) {
+      const userDay = userNow.getUTCDay();
+      if (!reminder.daysOfWeek.includes(userDay)) return;
+    }
+
+    const minutesSinceStart = currentMinutes - startMinutes;
+
+    if (
+      minutesSinceStart >= 0 &&
+      minutesSinceStart % reminder.intervalMinutes === 0 &&
+      currentMinutes !== lastTriggeredMinute
+    ) {
+      lastTriggeredMinute = currentMinutes;
+      await sendMainReminder(false);
+      
+      // Update nextRun and schedule next pre-warning after main reminder fires
+      updateNextRun();
+    }
+  }, 10000);
+
+  // Set initial nextRun
+  reminder.nextRun = getNextScheduledTime(
+    reminder.startTime,
+    reminder.endTime,
+    reminder.intervalMinutes,
+    reminder.timezoneOffset || 0,
+  ).getTime();
+
+  // Schedule initial pre-warning
+  scheduleNextPreWarning();
 
   console.log(
     `Scheduled reminder ${reminderId}: Next run at ${new Date(reminder.nextRun).toLocaleString()}`,
@@ -513,7 +621,7 @@ app.get("/api/reminders", (req, res) => {
   res.json(reminderList);
 });
 
-app.post("/api/reminders", (req, res) => {
+app.post("/api/reminders", async (req, res) => {
   try {
     const {
       channelId,
@@ -546,20 +654,26 @@ app.post("/api/reminders", (req, res) => {
     }
 
     const parsedIntervalMinutes = parseInt(intervalMinutes) || 0;
-    
+
     // Interval must be 0 (one-time) or at least 5 minutes
     if (parsedIntervalMinutes !== 0 && parsedIntervalMinutes < 5) {
-      return res.status(400).json({ 
-        error: "Interval must be 0 (one-time) or at least 5 minutes" 
+      return res.status(400).json({
+        error: "Interval must be 0 (one-time) or at least 5 minutes",
       });
     }
 
     // End time is required only if interval > 0
     if (parsedIntervalMinutes > 0 && !endTime) {
-      return res.status(400).json({ error: "End time is required for recurring reminders" });
+      return res
+        .status(400)
+        .json({ error: "End time is required for recurring reminders" });
     }
 
-    if (preWarningMinutes && parsedIntervalMinutes > 0 && preWarningMinutes >= parsedIntervalMinutes) {
+    if (
+      preWarningMinutes &&
+      parsedIntervalMinutes > 0 &&
+      preWarningMinutes >= parsedIntervalMinutes
+    ) {
       return res
         .status(400)
         .json({ error: "Pre-warning time must be less than interval" });
@@ -593,7 +707,7 @@ app.post("/api/reminders", (req, res) => {
       startDate: startDate ? new Date(startDate) : null,
       endDate: endDate ? new Date(endDate) : null,
       timezoneOffset: parseInt(timezoneOffset) || 0,
-      daysOfWeek: hasDays ? daysOfWeek.map(d => parseInt(d)) : null,
+      daysOfWeek: hasDays ? daysOfWeek.map((d) => parseInt(d)) : null,
       mainTitle: mainTitle || null,
       mainColor: mainColor || null,
       preWarningTitle: preWarningTitle || null,
@@ -609,7 +723,7 @@ app.post("/api/reminders", (req, res) => {
 
     reminders.set(reminderId, reminder);
     scheduleReminder(reminderId, reminder);
-    saveReminders();
+    await saveReminders();
 
     // Return reminder without circular references (intervalId, preWarningTimeoutId)
     const { intervalId, preWarningTimeoutId, ...safeReminder } = reminder;
@@ -620,7 +734,7 @@ app.post("/api/reminders", (req, res) => {
   }
 });
 
-app.put("/api/reminders/:id", (req, res) => {
+app.put("/api/reminders/:id", async (req, res) => {
   try {
     const reminderId = parseInt(req.params.id);
     const reminder = reminders.get(reminderId);
@@ -672,7 +786,9 @@ app.put("/api/reminders/:id", (req, res) => {
       reminder.endDate = endDate ? new Date(endDate) : null;
     }
     if (daysOfWeek !== undefined) {
-      reminder.daysOfWeek = Array.isArray(daysOfWeek) ? daysOfWeek.map(d => parseInt(d)) : null;
+      reminder.daysOfWeek = Array.isArray(daysOfWeek)
+        ? daysOfWeek.map((d) => parseInt(d))
+        : null;
     }
     if (mainTitle !== undefined) {
       reminder.mainTitle = mainTitle || null;
@@ -688,7 +804,7 @@ app.put("/api/reminders/:id", (req, res) => {
     }
 
     scheduleReminder(reminderId, reminder);
-    saveReminders();
+    await saveReminders();
 
     // Return reminder without circular references
     const { intervalId, preWarningTimeoutId, ...safeReminder } = reminder;
@@ -699,7 +815,7 @@ app.put("/api/reminders/:id", (req, res) => {
   }
 });
 
-app.delete("/api/reminders/:id", (req, res) => {
+app.delete("/api/reminders/:id", async (req, res) => {
   const reminderId = parseInt(req.params.id);
   const reminder = reminders.get(reminderId);
 
@@ -711,12 +827,12 @@ app.delete("/api/reminders/:id", (req, res) => {
   if (reminder.preWarningTimeoutId) clearTimeout(reminder.preWarningTimeoutId);
 
   reminders.delete(reminderId);
-  saveReminders();
+  await saveReminders();
 
   res.json({ success: true });
 });
 
-app.post("/api/reminders/:id/reactivate", (req, res) => {
+app.post("/api/reminders/:id/reactivate", async (req, res) => {
   const reminderId = parseInt(req.params.id);
   const reminder = reminders.get(reminderId);
 
@@ -730,9 +846,9 @@ app.post("/api/reminders/:id/reactivate", (req, res) => {
 
   reminder.isActive = true;
   reminder.firedAt = null;
-  
+
   scheduleReminder(reminderId, reminder);
-  saveReminders();
+  await saveReminders();
 
   res.json({ success: true, message: "Reminder reactivated" });
 });
@@ -1454,7 +1570,7 @@ app.get("/", (req, res) => {
       const selectedDays = Array.from(document.querySelectorAll('input[name="daysOfWeek"]:checked')).map(cb => parseInt(cb.value));
       const mainTitleVal = document.getElementById('mainTitle').value;
       const mainColorVal = document.getElementById('mainColor').value;
-      
+
       const data = {
         channelId: document.getElementById('channel').value,
         intervalMinutes: document.getElementById('interval').value,
@@ -1659,8 +1775,9 @@ client.once("ready", async () => {
   } catch (error) {
     console.error("❌ Error registering commands:", error);
   }
-  
-  loadReminders();
+
+  console.log("📂 Loading reminders from JSONBin...");
+  await loadRemindersFromJsonBin();
   rescheduleAllReminders();
 });
 
@@ -1731,7 +1848,7 @@ client.on("interactionCreate", async (interaction) => {
         if (reminder.preWarningTimeoutId)
           clearTimeout(reminder.preWarningTimeoutId);
         reminders.delete(id);
-        saveReminders();
+        await saveReminders();
 
         await interaction.reply(`✅ Reminder #${id} stopped!`);
       }
