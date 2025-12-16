@@ -1,11 +1,10 @@
 # Discord Reminder Bot
 
 ## Overview
-A Discord bot that sends scheduled reminders to channels with a web-based control panel. Reminders persist across bot restarts using JSON file storage.
+A Discord bot that sends scheduled reminders to channels with a web-based control panel. Reminders persist across bot restarts using JSONBin.io cloud storage.
 
 ## Project Structure
 - `index.js` - Main bot file with Discord client, Express server, and API routes
-- `data/reminders.json` - Persistent storage for reminders (auto-created)
 - `package.json` - Node.js dependencies
 
 ## Features
@@ -27,11 +26,17 @@ A Discord bot that sends scheduled reminders to channels with a web-based contro
 
 ## Environment Variables
 - `DISCORD_TOKEN` - Discord bot token (stored as secret)
+- `JSONBIN_BIN_ID` - JSONBin.io bin ID for cloud storage
+- `JSONBIN_API_KEY` - JSONBin.io master key for API access
 
 ## Running the Bot
 The bot runs via the "Discord Bot" workflow which starts `node index.js` and serves the web UI on port 5000.
 
 ## Recent Changes
+- 2025-12-16: Migrated storage to JSONBin.io
+  - Reminders now persist in cloud storage via JSONBin.io API
+  - Automatically loads reminders on bot startup
+  - Saves to JSONBin on create/update/delete operations
 - 2025-12-15: Added inactive reminders UI section
   - One-time reminders that fired appear in "Inactive Reminders" section
   - Shows when the reminder last fired
@@ -40,4 +45,4 @@ The bot runs via the "Discord Bot" workflow which starts `node index.js` and ser
   - Interval 0 = one-time or daily at specific time
   - One-time reminders move to inactive list after firing
   - Default messages include {time} and emojis
-- 2025-12-15: Added JSON file persistence for reminders
+- 2025-12-15: Initial JSON file persistence (now replaced by JSONBin.io)
