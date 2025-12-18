@@ -258,26 +258,28 @@ function calculateNextRunTime(reminder) {
   // Helper to parse a date (string, Date, or timestamp) in the user's timezone
   const parseDateInUserTimezone = (dateInput) => {
     if (!dateInput) return null;
-    
+
     let dateObj;
-    if (typeof dateInput === 'string') {
+    if (typeof dateInput === "string") {
       // Parse the date string as midnight in user's timezone
       // dateStr is like "2025-12-17"
-      const [year, month, day] = dateInput.split('-').map(Number);
+      const [year, month, day] = dateInput.split("-").map(Number);
       // Create date at midnight in user's timezone, then convert to server time
       const userMidnight = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
       // Add timezone offset to get server time equivalent
       return new Date(userMidnight.getTime() + timezoneOffset * 60 * 1000);
     } else if (dateInput instanceof Date) {
       dateObj = dateInput;
-    } else if (typeof dateInput === 'number') {
+    } else if (typeof dateInput === "number") {
       dateObj = new Date(dateInput);
     } else {
       return null;
     }
-    
+
     // For Date objects or timestamps, convert to user's timezone midnight, then back to server time
-    const dateInUserTz = new Date(dateObj.getTime() - timezoneOffset * 60 * 1000);
+    const dateInUserTz = new Date(
+      dateObj.getTime() - timezoneOffset * 60 * 1000,
+    );
     dateInUserTz.setUTCHours(0, 0, 0, 0);
     return new Date(dateInUserTz.getTime() + timezoneOffset * 60 * 1000);
   };
@@ -285,87 +287,107 @@ function calculateNextRunTime(reminder) {
   // Helper to check if a candidate time is valid given date range (including start date)
   const isValidNextRun = (candidateTimestamp) => {
     const candidateDate = new Date(candidateTimestamp);
-    const candidateInUserTz = new Date(candidateTimestamp - timezoneOffset * 60 * 1000);
-    
+    const candidateInUserTz = new Date(
+      candidateTimestamp - timezoneOffset * 60 * 1000,
+    );
+
     // Check start date constraint - compare in user's timezone
-    if (reminder.dateRangeMode === "start" || reminder.dateRangeMode === "range") {
+    if (
+      reminder.dateRangeMode === "start" ||
+      reminder.dateRangeMode === "range"
+    ) {
       if (reminder.startDate) {
-        const startDateInServerTime = parseDateInUserTimezone(reminder.startDate);
+        const startDateInServerTime = parseDateInUserTimezone(
+          reminder.startDate,
+        );
         if (startDateInServerTime && candidateDate < startDateInServerTime) {
           return false; // Before start date
         }
       }
     }
-    
+
     // Check dateRangeMode restrictions
     if (reminder.dateRangeMode === "today") {
       const userToday = new Date(userNow);
       userToday.setUTCHours(0, 0, 0, 0);
       const userTomorrow = new Date(userToday);
       userTomorrow.setUTCDate(userTomorrow.getUTCDate() + 1);
-      
+
       const candidateDay = new Date(candidateInUserTz);
       candidateDay.setUTCHours(0, 0, 0, 0);
-      
+
       if (candidateDay.getTime() >= userTomorrow.getTime()) {
         return false; // Can't schedule for tomorrow in "today only" mode
       }
-    } else if (reminder.dateRangeMode === "range" || reminder.dateRangeMode === "end") {
+    } else if (
+      reminder.dateRangeMode === "range" ||
+      reminder.dateRangeMode === "end"
+    ) {
       if (reminder.endDate) {
         const endDateInServerTime = parseDateInUserTimezone(reminder.endDate);
         if (endDateInServerTime) {
           // End of day = start of next day - 1ms
-          const endOfDay = new Date(endDateInServerTime.getTime() + 24 * 60 * 60 * 1000 - 1);
+          const endOfDay = new Date(
+            endDateInServerTime.getTime() + 24 * 60 * 60 * 1000 - 1,
+          );
           if (candidateDate > endOfDay) {
             return false; // Past end date
           }
         }
       }
     }
-    
+
     return true;
   };
 
   // Helper to check if a specific day (in user's timezone) is valid for specific days + week intervals
   const isDayValidForReminder = (candidateTimestamp) => {
     if (!hasSpecificDays) return true;
-    
-    const candidateInUserTz = new Date(candidateTimestamp - timezoneOffset * 60 * 1000);
+
+    const candidateInUserTz = new Date(
+      candidateTimestamp - timezoneOffset * 60 * 1000,
+    );
     const candidateDay = candidateInUserTz.getUTCDay();
-    
+
     // Check if day of week matches
     if (!daysOfWeek.includes(candidateDay)) {
       return false;
     }
-    
+
     // Check week interval
     if (repeatWeeks > 1) {
       // Use start date as anchor if available, otherwise use creation date
       // This ensures the first valid day after start date is always week 0
       let anchorTimestamp;
-      if (reminder.startDate && (reminder.dateRangeMode === "start" || reminder.dateRangeMode === "range")) {
+      if (
+        reminder.startDate &&
+        (reminder.dateRangeMode === "start" ||
+          reminder.dateRangeMode === "range")
+      ) {
         anchorTimestamp = new Date(reminder.startDate).getTime();
       } else if (reminder.createdAt) {
         anchorTimestamp = new Date(reminder.createdAt).getTime();
       } else {
         anchorTimestamp = now.getTime();
       }
-      const anchorInUserTz = new Date(anchorTimestamp - timezoneOffset * 60 * 1000);
+      const anchorInUserTz = new Date(
+        anchorTimestamp - timezoneOffset * 60 * 1000,
+      );
       anchorInUserTz.setUTCHours(0, 0, 0, 0);
-      
+
       const checkDate = new Date(candidateInUserTz);
       checkDate.setUTCHours(0, 0, 0, 0);
-      
+
       const msPerWeek = 7 * 24 * 60 * 60 * 1000;
       const weeksDiff = Math.floor(
         (checkDate.getTime() - anchorInUserTz.getTime()) / msPerWeek,
       );
-      
+
       if (weeksDiff < 0 || weeksDiff % repeatWeeks !== 0) {
         return false;
       }
     }
-    
+
     return true;
   };
 
@@ -373,10 +395,14 @@ function calculateNextRunTime(reminder) {
   // Returns the number of days to add to get to the next valid day
   const findNextValidDay = (startTimestamp, maxDays = 365) => {
     if (!hasSpecificDays) return 0;
-    
+
     for (let daysToAdd = 0; daysToAdd <= maxDays; daysToAdd++) {
-      const candidateTimestamp = startTimestamp + daysToAdd * 24 * 60 * 60 * 1000;
-      if (isDayValidForReminder(candidateTimestamp) && isValidNextRun(candidateTimestamp)) {
+      const candidateTimestamp =
+        startTimestamp + daysToAdd * 24 * 60 * 60 * 1000;
+      if (
+        isDayValidForReminder(candidateTimestamp) &&
+        isValidNextRun(candidateTimestamp)
+      ) {
         return daysToAdd;
       }
     }
@@ -390,17 +416,19 @@ function calculateNextRunTime(reminder) {
     reminder.specificTimes.length > 0
   ) {
     const currentMinutes = userNow.getUTCHours() * 60 + userNow.getUTCMinutes();
-    
+
     // Get user's midnight
     const userMidnight = new Date(userNow);
     userMidnight.setUTCHours(0, 0, 0, 0);
-    
+
     // If using specific days, we need to find the next valid day first
     if (hasSpecificDays) {
       // Check today first - is it a valid day?
-      const todayTimestamp = userMidnight.getTime() + timezoneOffset * 60 * 1000;
-      const isTodayValid = isDayValidForReminder(todayTimestamp) && isValidNextRun(todayTimestamp);
-      
+      const todayTimestamp =
+        userMidnight.getTime() + timezoneOffset * 60 * 1000;
+      const isTodayValid =
+        isDayValidForReminder(todayTimestamp) && isValidNextRun(todayTimestamp);
+
       if (isTodayValid) {
         // Find next specific time today
         for (const specificTime of reminder.specificTimes) {
@@ -409,29 +437,34 @@ function calculateNextRunTime(reminder) {
             const nextRunUserTime = new Date(
               userMidnight.getTime() + targetMinutes * 60 * 1000,
             );
-            const candidateTime = nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
+            const candidateTime =
+              nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
             return candidateTime;
           }
         }
       }
-      
+
       // No valid time today, find next valid day
       const tomorrowTimestamp = todayTimestamp + 24 * 60 * 60 * 1000;
       const daysToAdd = findNextValidDay(tomorrowTimestamp, 365);
-      
+
       if (daysToAdd >= 0) {
-        const nextValidDayMidnight = new Date(userMidnight.getTime() + (daysToAdd + 1) * 24 * 60 * 60 * 1000);
+        const nextValidDayMidnight = new Date(
+          userMidnight.getTime() + (daysToAdd + 1) * 24 * 60 * 60 * 1000,
+        );
         const firstTime = reminder.specificTimes[0];
         const nextRunUserTime = new Date(
-          nextValidDayMidnight.getTime() + (firstTime.hours * 60 + firstTime.minutes) * 60 * 1000,
+          nextValidDayMidnight.getTime() +
+            (firstTime.hours * 60 + firstTime.minutes) * 60 * 1000,
         );
-        const candidateTime = nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
+        const candidateTime =
+          nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
         return candidateTime;
       }
-      
+
       return null; // No valid day found
     }
-    
+
     // Original logic for non-specific-days mode
     let nextTime = null;
 
@@ -449,12 +482,13 @@ function calculateNextRunTime(reminder) {
         userMidnight.getTime() +
           (nextTime.hours * 60 + nextTime.minutes) * 60 * 1000,
       );
-      const candidateTime = nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
+      const candidateTime =
+        nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
       if (isValidNextRun(candidateTime)) {
         return candidateTime;
       }
     }
-    
+
     // Check if we can schedule for tomorrow (first specific time)
     if (reminder.specificTimes.length > 0) {
       const firstTime = reminder.specificTimes[0];
@@ -462,12 +496,13 @@ function calculateNextRunTime(reminder) {
         userMidnight.getTime() +
           (24 * 60 + firstTime.hours * 60 + firstTime.minutes) * 60 * 1000,
       );
-      const candidateTime = nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
+      const candidateTime =
+        nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
       if (isValidNextRun(candidateTime)) {
         return candidateTime;
       }
     }
-    
+
     // No valid next run time
     return null;
   }
@@ -478,9 +513,11 @@ function calculateNextRunTime(reminder) {
     if (hasSpecificDays) {
       const userMidnight = new Date(userNow);
       userMidnight.setUTCHours(0, 0, 0, 0);
-      const todayTimestamp = userMidnight.getTime() + timezoneOffset * 60 * 1000;
-      const isTodayValid = isDayValidForReminder(todayTimestamp) && isValidNextRun(todayTimestamp);
-      
+      const todayTimestamp =
+        userMidnight.getTime() + timezoneOffset * 60 * 1000;
+      const isTodayValid =
+        isDayValidForReminder(todayTimestamp) && isValidNextRun(todayTimestamp);
+
       if (isTodayValid) {
         const candidateTime = getNextScheduledTime(
           reminder.startTime,
@@ -488,41 +525,48 @@ function calculateNextRunTime(reminder) {
           reminder.intervalMinutes,
           timezoneOffset,
         ).getTime();
-        
+
         // Check if candidate is still today
-        const candidateInUserTz = new Date(candidateTime - timezoneOffset * 60 * 1000);
+        const candidateInUserTz = new Date(
+          candidateTime - timezoneOffset * 60 * 1000,
+        );
         const candidateMidnight = new Date(candidateInUserTz);
         candidateMidnight.setUTCHours(0, 0, 0, 0);
-        
+
         if (candidateMidnight.getTime() === userMidnight.getTime()) {
           return candidateTime;
         }
       }
-      
+
       // Find next valid day
       const tomorrowTimestamp = todayTimestamp + 24 * 60 * 60 * 1000;
       const daysToAdd = findNextValidDay(tomorrowTimestamp, 365);
-      
+
       if (daysToAdd >= 0) {
-        const nextValidDayMidnight = new Date(userMidnight.getTime() + (daysToAdd + 1) * 24 * 60 * 60 * 1000);
-        const nextRunUserTime = new Date(
-          nextValidDayMidnight.getTime() + 
-          (reminder.startTime.hours * 60 + reminder.startTime.minutes) * 60 * 1000,
+        const nextValidDayMidnight = new Date(
+          userMidnight.getTime() + (daysToAdd + 1) * 24 * 60 * 60 * 1000,
         );
-        const candidateTime = nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
+        const nextRunUserTime = new Date(
+          nextValidDayMidnight.getTime() +
+            (reminder.startTime.hours * 60 + reminder.startTime.minutes) *
+              60 *
+              1000,
+        );
+        const candidateTime =
+          nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
         return candidateTime;
       }
-      
+
       return null;
     }
-    
+
     const candidateTime = getNextScheduledTime(
       reminder.startTime,
       reminder.endTime,
       reminder.intervalMinutes,
       timezoneOffset,
     ).getTime();
-    
+
     if (isValidNextRun(candidateTime)) {
       return candidateTime;
     }
@@ -549,7 +593,8 @@ function calculateNextRunTime(reminder) {
       );
     }
 
-    const candidateTime = nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
+    const candidateTime =
+      nextRunUserTime.getTime() + timezoneOffset * 60 * 1000;
     if (isValidNextRun(candidateTime)) {
       return candidateTime;
     }
@@ -652,17 +697,25 @@ function getNextScheduledTime(
   return nextRunServerTime;
 }
 
-function isWithinDateRange(date, startDate, endDate, dateRangeMode, timezoneOffset = 0) {
+function isWithinDateRange(
+  date,
+  startDate,
+  endDate,
+  dateRangeMode,
+  timezoneOffset = 0,
+) {
   // Convert to user's timezone for comparison
-  const dateInUserTz = new Date(new Date(date).getTime() - timezoneOffset * 60 * 1000);
+  const dateInUserTz = new Date(
+    new Date(date).getTime() - timezoneOffset * 60 * 1000,
+  );
   const checkDate = new Date(dateInUserTz);
   checkDate.setUTCHours(0, 0, 0, 0);
 
   // Helper to parse date in user's timezone
   const parseDateInUserTz = (dateInput) => {
     if (!dateInput) return null;
-    if (typeof dateInput === 'string') {
-      const [year, month, day] = dateInput.split('-').map(Number);
+    if (typeof dateInput === "string") {
+      const [year, month, day] = dateInput.split("-").map(Number);
       return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
     }
     const d = new Date(dateInput);
@@ -675,7 +728,9 @@ function isWithinDateRange(date, startDate, endDate, dateRangeMode, timezoneOffs
   switch (dateRangeMode) {
     case "today":
       const now = new Date();
-      const todayInUserTz = new Date(now.getTime() - timezoneOffset * 60 * 1000);
+      const todayInUserTz = new Date(
+        now.getTime() - timezoneOffset * 60 * 1000,
+      );
       todayInUserTz.setUTCHours(0, 0, 0, 0);
       return checkDate.getTime() === todayInUserTz.getTime();
 
@@ -723,7 +778,10 @@ function isValidWeekForReminder(date, reminder) {
   // Use start date as anchor if available, otherwise use creation date
   // This ensures the first valid day after start date is always week 0
   let anchorTimestamp;
-  if (reminder.startDate && (reminder.dateRangeMode === "start" || reminder.dateRangeMode === "range")) {
+  if (
+    reminder.startDate &&
+    (reminder.dateRangeMode === "start" || reminder.dateRangeMode === "range")
+  ) {
     anchorTimestamp = new Date(reminder.startDate).getTime();
   } else if (reminder.createdAt) {
     anchorTimestamp = new Date(reminder.createdAt).getTime();
@@ -733,7 +791,9 @@ function isValidWeekForReminder(date, reminder) {
   const anchorInUserTz = new Date(anchorTimestamp - timezoneOffset * 60 * 1000);
   anchorInUserTz.setUTCHours(0, 0, 0, 0);
 
-  const checkDateInUserTz = new Date(new Date(date).getTime() - timezoneOffset * 60 * 1000);
+  const checkDateInUserTz = new Date(
+    new Date(date).getTime() - timezoneOffset * 60 * 1000,
+  );
   checkDateInUserTz.setUTCHours(0, 0, 0, 0);
 
   const msPerWeek = 7 * 24 * 60 * 60 * 1000;
@@ -752,7 +812,9 @@ function isDayValid(date, reminder) {
   if (daysOfWeek.length === 0) return true;
 
   // Convert to user's timezone to get correct day of week
-  const dateInUserTz = new Date(new Date(date).getTime() - timezoneOffset * 60 * 1000);
+  const dateInUserTz = new Date(
+    new Date(date).getTime() - timezoneOffset * 60 * 1000,
+  );
   const userDay = dateInUserTz.getUTCDay();
 
   return daysOfWeek.includes(userDay);
@@ -815,21 +877,20 @@ function scheduleReminder(reminderId, reminder) {
       return;
     }
 
-    // Replace placeholders in main message
-    let mainMessage = reminder.message;
+    // Replace placeholders in main message (for embed)
+    let embedMessage = reminder.message; // Renamed to embedMessage
     const nowTime = new Date().getTime();
-    mainMessage = mainMessage.replace(
+    embedMessage = embedMessage.replace(
       /\{time\}/g,
       getDiscordTimestamp(nowTime, "t"),
     );
-    mainMessage = mainMessage.replace(
+    embedMessage = embedMessage.replace(
       /\{relative\}/g,
       getDiscordTimestamp(nowTime, "R"),
     );
 
-    const messageContent = roleMention
-      ? `${roleMention}${mainMessage}`
-      : mainMessage;
+    // Role mention goes in message CONTENT, not in embed
+    const messageContent = roleMention ? roleMention : ""; // Only role mention here
 
     const mainColor = parseInt(
       (reminder.mainColor || "#00ff00").replace("#", ""),
@@ -838,7 +899,7 @@ function scheduleReminder(reminderId, reminder) {
     const embed = new Discord.EmbedBuilder()
       .setColor(mainColor)
       .setTitle(reminder.mainTitle || "🔔 Reminder!")
-      .setDescription(messageContent)
+      .setDescription(embedMessage) // <-- No role mention in embed
       .setTimestamp();
 
     // Set footer based on reminder type
@@ -863,7 +924,11 @@ function scheduleReminder(reminderId, reminder) {
       });
     }
 
-    await channel.send({ embeds: [embed] });
+    // Send role mention in content, embed separately
+    await channel.send({
+      content: messageContent, // Role mention here
+      embeds: [embed],
+    });
 
     // Record that reminder fired
     reminder.firedAt = Date.now();
@@ -880,8 +945,7 @@ function scheduleReminder(reminderId, reminder) {
     }
 
     const now = Date.now();
-    const preWarningTime =
-      nextRunTime - reminder.preWarningMinutes * 60 * 1000;
+    const preWarningTime = nextRunTime - reminder.preWarningMinutes * 60 * 1000;
 
     if (preWarningTime > now) {
       const delay = preWarningTime - now;
@@ -911,9 +975,8 @@ function scheduleReminder(reminderId, reminder) {
           getDiscordTimestamp(nextRunTime, "R"),
         );
 
-        if (roleMention) {
-          preWarningContent = `${roleMention}${preWarningContent}`;
-        }
+        // Pre-warning message without role mention (for embed)
+        let preWarningEmbedMessage = preWarningContent; // Renamed
 
         const preColor = parseInt(
           (reminder.preWarningColor || "#ffaa00").replace("#", ""),
@@ -922,7 +985,7 @@ function scheduleReminder(reminderId, reminder) {
         const preEmbed = new Discord.EmbedBuilder()
           .setColor(preColor)
           .setTitle(reminder.preWarningTitle || "⚠️ Upcoming Event")
-          .setDescription(preWarningContent)
+          .setDescription(preWarningEmbedMessage) // <-- No role mention in embed
           .setFooter({ text: `Reminder ID: ${reminderId}` })
           .setTimestamp();
 
@@ -931,7 +994,11 @@ function scheduleReminder(reminderId, reminder) {
           value: `${getDiscordTimestamp(nextRunTime, "R")} (${getDiscordTimestamp(nextRunTime, "t")})`,
         });
 
-        await channel.send({ embeds: [preEmbed] });
+        // Send role mention in content, embed separately
+        await channel.send({
+          content: roleMention ? roleMention : "", // Role mention here
+          embeds: [preEmbed],
+        });
       }, delay);
     }
   };
@@ -940,7 +1007,7 @@ function scheduleReminder(reminderId, reminder) {
   const updateNextRunAfterTrigger = async () => {
     const newNextRun = calculateNextRunTime(reminder);
     reminder.nextRun = newNextRun;
-    
+
     if (newNextRun === null) {
       // No more valid triggers - deactivate the reminder
       reminder.isActive = false;
@@ -952,12 +1019,14 @@ function scheduleReminder(reminderId, reminder) {
         clearTimeout(reminder.preWarningTimeoutId);
         reminder.preWarningTimeoutId = null;
       }
-      console.log(`Reminder ${reminderId} has no more valid triggers, marked inactive`);
+      console.log(
+        `Reminder ${reminderId} has no more valid triggers, marked inactive`,
+      );
     } else {
       // Schedule next pre-warning
       scheduleNextPreWarning(newNextRun);
     }
-    
+
     await saveReminders();
   };
 
@@ -1023,7 +1092,7 @@ function scheduleReminder(reminderId, reminder) {
       `Scheduled specific times reminder ${reminderId} with ${reminder.specificTimes.length} time(s)`,
     );
     reminder.nextRun = calculateNextRunTime(reminder);
-    
+
     // Check if reminder should be inactive from the start
     if (reminder.nextRun === null) {
       reminder.isActive = false;
@@ -1032,10 +1101,12 @@ function scheduleReminder(reminderId, reminder) {
         reminder.intervalId = null;
       }
       saveReminders();
-      console.log(`Reminder ${reminderId} has no valid triggers, marked inactive`);
+      console.log(
+        `Reminder ${reminderId} has no valid triggers, marked inactive`,
+      );
       return;
     }
-    
+
     // Schedule initial pre-warning for specific times mode
     if (reminder.nextRun && reminder.preWarningMinutes) {
       scheduleNextPreWarning(reminder.nextRun);
@@ -1094,7 +1165,7 @@ function scheduleReminder(reminderId, reminder) {
 
     // Calculate initial next run time
     reminder.nextRun = calculateNextRunTime(reminder);
-    
+
     // Check if reminder should be inactive from the start
     if (reminder.nextRun === null) {
       reminder.isActive = false;
@@ -1103,7 +1174,9 @@ function scheduleReminder(reminderId, reminder) {
         reminder.intervalId = null;
       }
       saveReminders();
-      console.log(`Reminder ${reminderId} has no valid triggers, marked inactive`);
+      console.log(
+        `Reminder ${reminderId} has no valid triggers, marked inactive`,
+      );
       return;
     }
 
@@ -1134,12 +1207,14 @@ function scheduleReminder(reminderId, reminder) {
   const delayMs = delayMinutes * 60 * 1000 - userNow.getUTCSeconds() * 1000;
 
   reminder.nextRun = calculateNextRunTime(reminder);
-  
+
   // Check if reminder should be inactive (e.g., today only and time passed)
   if (reminder.nextRun === null) {
     reminder.isActive = false;
     saveReminders();
-    console.log(`One-time reminder ${reminderId} has no valid trigger, marked inactive`);
+    console.log(
+      `One-time reminder ${reminderId} has no valid trigger, marked inactive`,
+    );
     return;
   }
 
@@ -1235,6 +1310,15 @@ app.get("/api/reminders", (req, res) => {
       ([id, reminder]) => {
         const channel = client.channels.cache.get(reminder.channelId);
 
+        // NEW: Get role name if roleId exists
+        let roleName = null;
+        let guildId = null;
+        if (reminder.roleId && channel?.guild) {
+          guildId = channel.guild.id;
+          const role = channel.guild.roles.cache.get(reminder.roleId);
+          roleName = role ? role.name : null;
+        }
+
         // Safely extract time objects
         const safeStartTime = reminder.startTime
           ? {
@@ -1263,11 +1347,13 @@ app.get("/api/reminders", (req, res) => {
           channelId: reminder.channelId,
           channelName: channel?.name || "Unknown",
           guildName: channel?.guild?.name || "Unknown",
+          guildId: guildId, // NEW: Include guild ID
           message: reminder.message,
           intervalMinutes: reminder.intervalMinutes,
           preWarningMinutes: reminder.preWarningMinutes,
           preWarningMessage: reminder.preWarningMessage,
           roleId: reminder.roleId,
+          roleName: roleName, // NEW: Include role name
           startTime: safeStartTime,
           endTime: safeEndTime,
           timezoneOffset: reminder.timezoneOffset,
@@ -1394,11 +1480,9 @@ app.post("/api/reminders", async (req, res) => {
     // Validate date range mode
     if (dateRangeMode === "range") {
       if (!startDate || !endDate) {
-        return res
-          .status(400)
-          .json({
-            error: "Both start and end dates are required for date range mode",
-          });
+        return res.status(400).json({
+          error: "Both start and end dates are required for date range mode",
+        });
       }
       if (new Date(startDate) > new Date(endDate)) {
         return res
@@ -1417,12 +1501,9 @@ app.post("/api/reminders", async (req, res) => {
       frequencyMode === "specific" &&
       parsedDaysOfWeek.length === 0
     ) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "At least one day must be selected for specific days frequency",
-        });
+      return res.status(400).json({
+        error: "At least one day must be selected for specific days frequency",
+      });
     }
 
     const parsedRepeatWeeks = Math.min(
@@ -1454,7 +1535,10 @@ app.post("/api/reminders", async (req, res) => {
       endTime: parsedEndTime,
       startDate: startDate ? new Date(startDate) : null,
       endDate: endDate ? new Date(endDate) : null,
-      timezoneOffset: req.body.timezoneOffset !== undefined ? req.body.timezoneOffset : new Date().getTimezoneOffset(),
+      timezoneOffset:
+        req.body.timezoneOffset !== undefined
+          ? req.body.timezoneOffset
+          : new Date().getTimezoneOffset(),
       daysOfWeek: parsedDaysOfWeek,
       mainTitle: mainTitle || null,
       mainColor: mainColor || null,
@@ -2815,7 +2899,7 @@ app.get("/", (req, res) => {
         }
       }
 
-      const roleText = r.roleId ? \`<span class="reminder-badge role-badge">@Role Mentioned</span>\` : '';
+      const roleText = r.roleName ? \`<span class="reminder-badge role-badge">@\${r.roleName}</span>\` : (r.roleId ? \`<span class="reminder-badge role-badge" title="Role ID: \${r.roleId}">@Unknown Role</span>\` : '');
 
       // Date range badge
       let dateRangeText = '';
